@@ -149,6 +149,7 @@
 </style>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 </head>
 <body>
 
@@ -216,6 +217,8 @@
   <!-- ADD PRODUCT PANEL -->
   <div class="panel" id="addPanel" style="display:none;">
     <div class="error-box" id="addError" style="display:none;"></div>
+    <button type="button" class="btn-primary" style="background:#E4572E;margin-bottom:16px;" onclick="openScanModal()">📷 Scan Medicine Pack</button>
+    <p class="sub" style="margin:-12px 0 16px;font-size:12px;color:var(--muted);">Point the camera at the medicine box — name, expiry &amp; price will be auto-filled where readable. Please double-check before saving.</p>
     <form id="addForm" onsubmit="return addProduct(event)">
       <div class="field">
         <label>Product Name</label>
@@ -371,6 +374,23 @@
     <div class="modal-actions">
       <button class="btn-confirm" onclick="checkAddLockPin()">Unlock</button>
       <button class="btn-cancel" onclick="closeAddLockModal()">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- SCAN MEDICINE MODAL -->
+<div class="modal-overlay" id="scanModal">
+  <div class="modal" style="max-width:420px;">
+    <h3>Scan Medicine Pack</h3>
+    <p class="sub" id="scanStatusText">Point the camera at the name / expiry / price on the box, then capture.</p>
+    <div class="error-box" id="scanError" style="display:none;"></div>
+    <div style="position:relative;background:#000;border-radius:10px;overflow:hidden;">
+      <video id="scanVideo" autoplay playsinline style="width:100%;display:block;max-height:320px;"></video>
+    </div>
+    <canvas id="scanCanvas" style="display:none;"></canvas>
+    <div class="modal-actions">
+      <button class="btn-confirm" id="scanCaptureBtn" onclick="captureAndScan()">📸 Capture &amp; Read</button>
+      <button class="btn-cancel" onclick="closeScanModal()">Close</button>
     </div>
   </div>
 </div>
@@ -722,6 +742,125 @@
     document.getElementById('addLockModal').classList.add('open');
     setTimeout(() => document.getElementById('addLockPinInput').focus(), 50);
   }
+
+  // ---- Scan Medicine Pack (Camera + OCR) ----
+  let scanStream = null;
+
+  function openScanModal(){
+    document.getElementById('scanError').style.display = 'none';
+    document.getElementById('scanStatusText').textContent = 'Point the camera at the name / expiry / price on the box, then capture.';
+    document.getElementById('scanModal').classList.add('open');
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      .then(function(stream){
+        scanStream = stream;
+        const video = document.getElementById('scanVideo');
+        video.srcObject = stream;
+      })
+      .catch(function(err){
+        const errBox = document.getElementById('scanError');
+        errBox.textContent = 'Could not access camera: ' + err.message + '. Please allow camera permission.';
+        errBox.style.display = 'block';
+      });
+  }
+
+  function closeScanModal(){
+    if(scanStream){
+      scanStream.getTracks().forEach(t => t.stop());
+      scanStream = null;
+    }
+    document.getElementById('scanModal').classList.remove('open');
+  }
+
+  function captureAndScan(){
+    const video = document.getElementById('scanVideo');
+    const canvas = document.getElementById('scanCanvas');
+    if(!video.videoWidth){
+      alert('Camera not ready yet, please wait a second and try again.');
+      return;
+    }
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+
+    const btn = document.getElementById('scanCaptureBtn');
+    const statusEl = document.getElementById('scanStatusText');
+    btn.disabled = true;
+    statusEl.textContent = '🔄 Reading text... this can take a few seconds.';
+
+    canvas.toBlob(function(blob){
+      Tesseract.recognize(blob, 'eng')
+        .then(function(result){
+          const text = result.data.text || '';
+          applyScannedText(text);
+        })
+        .catch(function(err){
+          const errBox = document.getElementById('scanError');
+          errBox.textContent = 'Could not read text: ' + err.message;
+          errBox.style.display = 'block';
+        })
+        .finally(function(){
+          btn.disabled = false;
+          statusEl.textContent = 'Point the camera at the name / expiry / price on the box, then capture.';
+        });
+    }, 'image/png');
+  }
+
+  function applyScannedText(rawText){
+    const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 1);
+    let foundName = false, foundExpiry = false, foundPrice = false;
+
+    // --- Expiry date: look for patterns like 12/2027, 12-2027, 12.2027, EXP 05/28, etc ---
+    const expiryPattern = /(?:EXP|EXPIRY|EXP\.?\s*DATE)?\D{0,10}?\b(0[1-9]|1[0-2])[\/\-\.](\d{2}|\d{4})\b/i;
+    for(const line of lines){
+      const m = line.match(expiryPattern);
+      if(m){
+        let month = parseInt(m[1], 10);
+        let year = m[2].length === 2 ? (2000 + parseInt(m[2], 10)) : parseInt(m[2], 10);
+        const daysInMonth = [31, (year%4===0 && (year%100!==0 || year%400===0))?29:28,31,30,31,30,31,31,30,31,30,31];
+        const dd = daysInMonth[month-1];
+        document.getElementById('fExpiry').value = year + '-' + String(month).padStart(2,'0') + '-' + String(dd).padStart(2,'0');
+        foundExpiry = true;
+        break;
+      }
+    }
+
+    // --- Price: look for "Rs 123", "Rs. 123", "PKR 123", "₨123", "MRP 123" ---
+    const pricePattern = /(?:RS\.?|PKR|₨|MRP)\s*[:.]?\s*(\d{1,6}(?:\.\d{1,2})?)/i;
+    for(const line of lines){
+      const m = line.match(pricePattern);
+      if(m){
+        document.getElementById('fPrice').value = m[1];
+        foundPrice = true;
+        break;
+      }
+    }
+
+    // --- Name: first reasonably long line that isn't the expiry/price/batch/generic label ---
+    const skipWords = /^(EXP|MFG|BATCH|LOT|MRP|RS\.?|PKR|MADE|STORAGE|KEEP|READ|CAUTION|WARNING|COMPOSITION|MANUFACTURED|DIRECTIONS)/i;
+    for(const line of lines){
+      const cleaned = line.replace(/[^A-Za-z0-9\s\-\/.]/g, ' ').replace(/\s+/g, ' ').trim();
+      if(cleaned.length < 3) continue;
+      if(skipWords.test(cleaned)) continue;
+      if(/^\d+$/.test(cleaned)) continue;
+      if(expiryPattern.test(cleaned) || pricePattern.test(cleaned)) continue;
+      document.getElementById('fName').value = cleaned;
+      foundName = true;
+      break;
+    }
+
+    closeScanModal();
+
+    const parts = [];
+    if(foundName) parts.push('name');
+    if(foundExpiry) parts.push('expiry');
+    if(foundPrice) parts.push('price');
+    if(parts.length > 0){
+      alert('Auto-filled: ' + parts.join(', ') + '. Please review before saving — enter quantity manually.');
+    } else {
+      alert('Could not clearly read the name/expiry/price. Please enter them manually.');
+    }
+  }
+
   function closeAddLockModal(){
     document.getElementById('addLockModal').classList.remove('open');
   }
