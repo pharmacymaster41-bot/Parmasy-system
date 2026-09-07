@@ -787,22 +787,55 @@
     btn.disabled = true;
     statusEl.textContent = '🔄 Reading text... this can take a few seconds.';
 
-    canvas.toBlob(function(blob){
-      Tesseract.recognize(blob, 'eng')
-        .then(function(result){
-          const text = result.data.text || '';
-          applyScannedText(text);
-        })
-        .catch(function(err){
-          const errBox = document.getElementById('scanError');
-          errBox.textContent = 'Could not read text: ' + err.message;
-          errBox.style.display = 'block';
-        })
-        .finally(function(){
-          btn.disabled = false;
-          statusEl.textContent = 'Point the camera at the name / expiry / price on the box, then capture.';
+    recognizeBestOrientation(canvas)
+      .then(function(text){
+        applyScannedText(text);
+      })
+      .catch(function(err){
+        const errBox = document.getElementById('scanError');
+        errBox.textContent = 'Could not read text: ' + err.message;
+        errBox.style.display = 'block';
+      })
+      .finally(function(){
+        btn.disabled = false;
+        statusEl.textContent = 'Point the camera at the name / expiry / price on the box, then capture.';
+      });
+  }
+
+  // Rotates a source canvas by the given degrees (0/90/180/270) onto a new canvas
+  function rotateCanvas(srcCanvas, degrees){
+    const w = srcCanvas.width, h = srcCanvas.height;
+    const out = document.createElement('canvas');
+    const ctx = out.getContext('2d');
+    if(degrees === 90 || degrees === 270){
+      out.width = h; out.height = w;
+    } else {
+      out.width = w; out.height = h;
+    }
+    ctx.translate(out.width/2, out.height/2);
+    ctx.rotate(degrees * Math.PI / 180);
+    ctx.drawImage(srcCanvas, -w/2, -h/2);
+    return out;
+  }
+
+  // Runs OCR at 0/90/180/270 rotations (the box in the photo is often sideways)
+  // and keeps whichever result Tesseract was most confident about.
+  function recognizeBestOrientation(canvas){
+    const angles = [0, 90, 180, 270];
+    let best = null;
+    return angles.reduce(function(chain, angle){
+      return chain.then(function(){
+        const testCanvas = angle === 0 ? canvas : rotateCanvas(canvas, angle);
+        return Tesseract.recognize(testCanvas, 'eng').then(function(result){
+          const confidence = result.data.confidence || 0;
+          if(!best || confidence > best.confidence){
+            best = { confidence: confidence, text: result.data.text || '' };
+          }
         });
-    }, 'image/png');
+      });
+    }, Promise.resolve()).then(function(){
+      return best ? best.text : '';
+    });
   }
 
   function applyScannedText(rawText){
@@ -839,7 +872,8 @@
     const skipWords = /^(EXP|MFG|BATCH|LOT|MRP|RS\.?|PKR|MADE|STORAGE|KEEP|READ|CAUTION|WARNING|COMPOSITION|MANUFACTURED|DIRECTIONS)/i;
     for(const line of lines){
       const cleaned = line.replace(/[^A-Za-z0-9\s\-\/.]/g, ' ').replace(/\s+/g, ' ').trim();
-      if(cleaned.length < 3) continue;
+      const letterCount = (cleaned.match(/[A-Za-z]/g) || []).length;
+      if(letterCount < 4) continue; // needs at least a few real letters, not stray symbols/noise
       if(skipWords.test(cleaned)) continue;
       if(/^\d+$/.test(cleaned)) continue;
       if(expiryPattern.test(cleaned) || pricePattern.test(cleaned)) continue;
