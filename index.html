@@ -398,6 +398,7 @@
       <div style="position:relative;background:#000;border-radius:10px;overflow:hidden;">
         <video id="scanVideo" autoplay playsinline style="width:100%;display:block;max-height:320px;"></video>
         <div id="scanGuideBox" style="position:absolute;left:6%;top:36%;width:88%;height:28%;border:2px dashed #fff;border-radius:6px;box-shadow:0 0 0 9999px rgba(0,0,0,0.4);pointer-events:none;"></div>
+        <button type="button" id="scanTorchBtn" onclick="toggleScanTorch()" style="display:none;position:absolute;right:10px;top:10px;background:rgba(0,0,0,0.55);color:#fff;border:1px solid rgba(255,255,255,0.5);border-radius:20px;padding:6px 12px;font-size:13px;">🔦 Flash</button>
       </div>
       <p class="sub" style="margin:8px 0 0;text-align:center;">Fit only the text you want inside the dashed box, then capture.</p>
     </div>
@@ -787,6 +788,7 @@
   let scanMode = 'name'; // 'name' = scan brand name only, 'expiry' = scan expiry & price only
   let scanWords = [];      // word boxes { text, x0,y0,x1,y1 } from the frozen photo, in canvas pixel coords
   let scanSelectedIdx = []; // indices into scanWords, in the order the user tapped them
+  let scanTorchOn = false;
 
   function openScanModal(mode){
     scanMode = mode || 'name';
@@ -798,11 +800,25 @@
       : 'Point the camera at the batch label (EXP / MRP), then capture.';
     showScanCameraView();
     document.getElementById('scanModal').classList.add('open');
+    startScanCamera();
+  }
+
+  // Starts (or restarts) the live camera feed and shows the flash button if the device supports a torch.
+  function startScanCamera(){
+    scanTorchOn = false;
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
       .then(function(stream){
         scanStream = stream;
-        const video = document.getElementById('scanVideo');
-        video.srcObject = stream;
+        document.getElementById('scanVideo').srcObject = stream;
+        const track = stream.getVideoTracks()[0];
+        const caps = (track && track.getCapabilities) ? track.getCapabilities() : {};
+        const torchBtn = document.getElementById('scanTorchBtn');
+        if(caps && caps.torch){
+          torchBtn.style.display = 'block';
+          torchBtn.textContent = '🔦 Flash';
+        } else {
+          torchBtn.style.display = 'none';
+        }
       })
       .catch(function(err){
         const errBox = document.getElementById('scanError');
@@ -811,11 +827,28 @@
       });
   }
 
+  function toggleScanTorch(){
+    if(!scanStream) return;
+    const track = scanStream.getVideoTracks()[0];
+    if(!track) return;
+    scanTorchOn = !scanTorchOn;
+    track.applyConstraints({ advanced: [{ torch: scanTorchOn }] })
+      .then(function(){
+        document.getElementById('scanTorchBtn').textContent = scanTorchOn ? '🔦 Flash On' : '🔦 Flash';
+      })
+      .catch(function(){
+        scanTorchOn = !scanTorchOn; // revert if the device rejected it
+        alert('Could not control the flash on this device.');
+      });
+  }
+
   function stopScanStream(){
     if(scanStream){
       scanStream.getTracks().forEach(t => t.stop());
       scanStream = null;
     }
+    scanTorchOn = false;
+    document.getElementById('scanTorchBtn').style.display = 'none';
   }
 
   function closeScanModal(){
@@ -853,16 +886,7 @@
     scanWords = [];
     scanSelectedIdx = [];
     showScanCameraView();
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-      .then(function(stream){
-        scanStream = stream;
-        document.getElementById('scanVideo').srcObject = stream;
-      })
-      .catch(function(err){
-        const errBox = document.getElementById('scanError');
-        errBox.textContent = 'Could not access camera: ' + err.message + '. Please allow camera permission.';
-        errBox.style.display = 'block';
-      });
+    startScanCamera();
   }
 
   // Guide box position as fractions of the video's own frame — must match #scanGuideBox CSS.
