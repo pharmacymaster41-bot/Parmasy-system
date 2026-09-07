@@ -958,7 +958,7 @@
       return;
     }
     if(target === 'expiry'){
-      const m = text.match(/(0[1-9]|1[0-2])[\/\-\.\s](\d{2}|\d{4})/);
+      const m = text.match(/(0[1-9]|1[0-2])[\/\-\.\s](\d{4}|\d{2})/);
       if(!m){
         alert('Could not find a month/year in the selected text (expected e.g. 12/2027). Please tap the exact date, or type it manually in the Expiry field.');
         return;
@@ -1053,7 +1053,7 @@
     const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 1);
     let foundName = false, foundExpiry = false, foundPrice = false;
 
-    const expiryPattern = /(?:EXP|EXPIRY|EXP\.?\s*DATE)?\D{0,10}?\b(0[1-9]|1[0-2])[\/\-\.](\d{2}|\d{4})\b/i;
+    const expiryPattern = /(?:EXP|EXPIRY|EXP\.?\s*DATE)?\D{0,10}?\b(0[1-9]|1[0-2])[\/\-\.](\d{4}|\d{2})\b/i;
     const pricePattern = /(?:RS\.?|PKR|₨|MRP)\s*[:.]?\s*(\d{1,6}(?:\.\d{1,2})?)/i;
 
     if(mode === 'expiry'){
