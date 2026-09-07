@@ -217,8 +217,11 @@
   <!-- ADD PRODUCT PANEL -->
   <div class="panel" id="addPanel" style="display:none;">
     <div class="error-box" id="addError" style="display:none;"></div>
-    <button type="button" class="btn-primary" style="background:#E4572E;margin-bottom:16px;" onclick="openScanModal()">📷 Scan Medicine Pack</button>
-    <p class="sub" style="margin:-12px 0 16px;font-size:12px;color:var(--muted);">Point the camera at the medicine box — name, expiry &amp; price will be auto-filled where readable. Please double-check before saving.</p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
+      <button type="button" class="btn-primary" style="background:#E4572E;" onclick="openScanModal('name')">📛 Scan Name</button>
+      <button type="button" class="btn-primary" style="background:#3E6E7A;" onclick="openScanModal('expiry')">📅 Scan Expiry &amp; Price</button>
+    </div>
+    <p class="sub" style="margin:0 0 16px;font-size:12px;color:var(--muted);">First scan the front of the box for the name, then scan the batch label for expiry &amp; price. Please double-check before saving.</p>
     <form id="addForm" onsubmit="return addProduct(event)">
       <div class="field">
         <label>Product Name</label>
@@ -381,7 +384,7 @@
 <!-- SCAN MEDICINE MODAL -->
 <div class="modal-overlay" id="scanModal">
   <div class="modal" style="max-width:420px;">
-    <h3>Scan Medicine Pack</h3>
+    <h3 id="scanModalTitle">Scan Medicine Pack</h3>
     <p class="sub" id="scanStatusText">Point the camera at the name / expiry / price on the box, then capture.</p>
     <div class="error-box" id="scanError" style="display:none;"></div>
     <div style="position:relative;background:#000;border-radius:10px;overflow:hidden;">
@@ -745,10 +748,16 @@
 
   // ---- Scan Medicine Pack (Camera + OCR) ----
   let scanStream = null;
+  let scanMode = 'name'; // 'name' = scan brand name only, 'expiry' = scan expiry & price only
 
-  function openScanModal(){
+  function openScanModal(mode){
+    scanMode = mode || 'name';
+    const isName = scanMode === 'name';
+    document.getElementById('scanModalTitle').textContent = isName ? 'Scan Product Name' : 'Scan Expiry & Price';
     document.getElementById('scanError').style.display = 'none';
-    document.getElementById('scanStatusText').textContent = 'Point the camera at the name / expiry / price on the box, then capture.';
+    document.getElementById('scanStatusText').textContent = isName
+      ? 'Point the camera at the brand name on the front of the box, then capture.'
+      : 'Point the camera at the batch label (EXP / MRP), then capture.';
     document.getElementById('scanModal').classList.add('open');
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
       .then(function(stream){
@@ -789,7 +798,7 @@
 
     recognizeBestOrientation(canvas)
       .then(function(text){
-        applyScannedText(text);
+        applyScannedText(text, scanMode);
       })
       .catch(function(err){
         const errBox = document.getElementById('scanError');
@@ -798,7 +807,9 @@
       })
       .finally(function(){
         btn.disabled = false;
-        statusEl.textContent = 'Point the camera at the name / expiry / price on the box, then capture.';
+        statusEl.textContent = scanMode === 'name'
+          ? 'Point the camera at the brand name on the front of the box, then capture.'
+          : 'Point the camera at the batch label (EXP / MRP), then capture.';
       });
   }
 
@@ -838,48 +849,50 @@
     });
   }
 
-  function applyScannedText(rawText){
+  function applyScannedText(rawText, mode){
     const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 1);
     let foundName = false, foundExpiry = false, foundPrice = false;
 
-    // --- Expiry date: look for patterns like 12/2027, 12-2027, 12.2027, EXP 05/28, etc ---
     const expiryPattern = /(?:EXP|EXPIRY|EXP\.?\s*DATE)?\D{0,10}?\b(0[1-9]|1[0-2])[\/\-\.](\d{2}|\d{4})\b/i;
-    for(const line of lines){
-      const m = line.match(expiryPattern);
-      if(m){
-        let month = parseInt(m[1], 10);
-        let year = m[2].length === 2 ? (2000 + parseInt(m[2], 10)) : parseInt(m[2], 10);
-        const daysInMonth = [31, (year%4===0 && (year%100!==0 || year%400===0))?29:28,31,30,31,30,31,31,30,31,30,31];
-        const dd = daysInMonth[month-1];
-        document.getElementById('fExpiry').value = year + '-' + String(month).padStart(2,'0') + '-' + String(dd).padStart(2,'0');
-        foundExpiry = true;
-        break;
-      }
-    }
-
-    // --- Price: look for "Rs 123", "Rs. 123", "PKR 123", "₨123", "MRP 123" ---
     const pricePattern = /(?:RS\.?|PKR|₨|MRP)\s*[:.]?\s*(\d{1,6}(?:\.\d{1,2})?)/i;
-    for(const line of lines){
-      const m = line.match(pricePattern);
-      if(m){
-        document.getElementById('fPrice').value = m[1];
-        foundPrice = true;
+
+    if(mode === 'expiry'){
+      // --- Expiry date: look for patterns like 12/2027, 12-2027, 12.2027, EXP 05/28, etc ---
+      for(const line of lines){
+        const m = line.match(expiryPattern);
+        if(m){
+          let month = parseInt(m[1], 10);
+          let year = m[2].length === 2 ? (2000 + parseInt(m[2], 10)) : parseInt(m[2], 10);
+          const daysInMonth = [31, (year%4===0 && (year%100!==0 || year%400===0))?29:28,31,30,31,30,31,31,30,31,30,31];
+          const dd = daysInMonth[month-1];
+          document.getElementById('fExpiry').value = year + '-' + String(month).padStart(2,'0') + '-' + String(dd).padStart(2,'0');
+          foundExpiry = true;
+          break;
+        }
+      }
+      // --- Price: look for "Rs 123", "Rs. 123", "PKR 123", "₨123", "MRP 123" ---
+      for(const line of lines){
+        const m = line.match(pricePattern);
+        if(m){
+          document.getElementById('fPrice').value = m[1];
+          foundPrice = true;
+          break;
+        }
+      }
+    } else {
+      // --- Name: first reasonably long line that isn't the expiry/price/batch/generic label ---
+      const skipWords = /^(EXP|MFG|BATCH|LOT|MRP|RS\.?|PKR|MADE|STORAGE|KEEP|READ|CAUTION|WARNING|COMPOSITION|MANUFACTURED|DIRECTIONS)/i;
+      for(const line of lines){
+        const cleaned = line.replace(/[^A-Za-z0-9\s\-\/.]/g, ' ').replace(/\s+/g, ' ').trim();
+        const letterCount = (cleaned.match(/[A-Za-z]/g) || []).length;
+        if(letterCount < 4) continue; // needs at least a few real letters, not stray symbols/noise
+        if(skipWords.test(cleaned)) continue;
+        if(/^\d+$/.test(cleaned)) continue;
+        if(expiryPattern.test(cleaned) || pricePattern.test(cleaned)) continue;
+        document.getElementById('fName').value = cleaned;
+        foundName = true;
         break;
       }
-    }
-
-    // --- Name: first reasonably long line that isn't the expiry/price/batch/generic label ---
-    const skipWords = /^(EXP|MFG|BATCH|LOT|MRP|RS\.?|PKR|MADE|STORAGE|KEEP|READ|CAUTION|WARNING|COMPOSITION|MANUFACTURED|DIRECTIONS)/i;
-    for(const line of lines){
-      const cleaned = line.replace(/[^A-Za-z0-9\s\-\/.]/g, ' ').replace(/\s+/g, ' ').trim();
-      const letterCount = (cleaned.match(/[A-Za-z]/g) || []).length;
-      if(letterCount < 4) continue; // needs at least a few real letters, not stray symbols/noise
-      if(skipWords.test(cleaned)) continue;
-      if(/^\d+$/.test(cleaned)) continue;
-      if(expiryPattern.test(cleaned) || pricePattern.test(cleaned)) continue;
-      document.getElementById('fName').value = cleaned;
-      foundName = true;
-      break;
     }
 
     closeScanModal();
