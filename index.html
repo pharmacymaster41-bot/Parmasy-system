@@ -138,6 +138,11 @@
   .btn-confirm{ background:var(--teal); color:#fff; border:none; }
   .btn-confirm:hover{ background:var(--teal-hover); }
   .btn-cancel{ background:#fff; border:1px solid #DAD4C8; }
+  .scan-word{
+    position:absolute; cursor:pointer; border-radius:2px;
+    background:rgba(217,123,62,0.18); border:1px solid rgba(217,123,62,0.55);
+  }
+  .scan-word.selected{ background:rgba(27,92,86,0.35); border:1px solid var(--teal); }
   #tableWrap, #billTableWrap{ overflow-x:auto; }
   .cart-qty-input{ width:70px; border:1px solid #DAD4C8; border-radius:6px; padding:6px 8px; font-size:13px; }
   .bill-total-row{ font-weight:600; background:#F7F5F1; }
@@ -387,13 +392,41 @@
     <h3 id="scanModalTitle">Scan Medicine Pack</h3>
     <p class="sub" id="scanStatusText">Point the camera at the name / expiry / price on the box, then capture.</p>
     <div class="error-box" id="scanError" style="display:none;"></div>
-    <div style="position:relative;background:#000;border-radius:10px;overflow:hidden;">
-      <video id="scanVideo" autoplay playsinline style="width:100%;display:block;max-height:320px;"></video>
+
+    <div id="scanCameraView">
+      <div style="position:relative;background:#000;border-radius:10px;overflow:hidden;">
+        <video id="scanVideo" autoplay playsinline style="width:100%;display:block;max-height:320px;"></video>
+      </div>
     </div>
+
+    <div id="scanSelectView" style="display:none;">
+      <div id="scanImageWrap" style="position:relative;background:#000;border-radius:10px;overflow:hidden;line-height:0;max-height:320px;">
+        <img id="scanFrozenImg" style="width:100%;display:block;">
+        <div id="scanWordOverlay" style="position:absolute;top:0;left:0;width:100%;height:100%;"></div>
+      </div>
+      <div class="field" style="margin-top:12px;margin-bottom:0;">
+        <label>Selected Text (tap words above, or edit here)</label>
+        <input type="text" id="scanSelectedText" placeholder="Tap the correct words on the photo above">
+      </div>
+    </div>
+
     <canvas id="scanCanvas" style="display:none;"></canvas>
-    <div class="modal-actions">
+
+    <div class="modal-actions" id="scanCameraActions">
       <button class="btn-confirm" id="scanCaptureBtn" onclick="captureAndScan()">📸 Capture &amp; Read</button>
       <button class="btn-cancel" onclick="closeScanModal()">Close</button>
+    </div>
+    <div class="modal-actions" id="scanSelectActionsName" style="display:none;">
+      <button class="btn-confirm" onclick="useSelectedScanText('name')">✅ Use as Product Name</button>
+      <button class="btn-cancel" onclick="retakeScan()">🔄 Retake</button>
+    </div>
+    <div class="modal-actions" id="scanSelectActionsExpiry" style="display:none;">
+      <button class="btn-confirm" onclick="useSelectedScanText('expiry')">✅ Use as Expiry</button>
+      <button class="btn-confirm" onclick="useSelectedScanText('price')" style="background:var(--orange);">✅ Use as Price</button>
+    </div>
+    <div class="modal-actions" id="scanSelectActionsExpiry2" style="display:none;">
+      <button class="btn-cancel" onclick="retakeScan()">🔄 Retake</button>
+      <button class="btn-cancel" onclick="closeScanModal()">Done</button>
     </div>
   </div>
 </div>
@@ -749,6 +782,8 @@
   // ---- Scan Medicine Pack (Camera + OCR) ----
   let scanStream = null;
   let scanMode = 'name'; // 'name' = scan brand name only, 'expiry' = scan expiry & price only
+  let scanWords = [];      // word boxes { text, x0,y0,x1,y1 } from the frozen photo, in canvas pixel coords
+  let scanSelectedIdx = []; // indices into scanWords, in the order the user tapped them
 
   function openScanModal(mode){
     scanMode = mode || 'name';
@@ -758,6 +793,7 @@
     document.getElementById('scanStatusText').textContent = isName
       ? 'Point the camera at the brand name on the front of the box, then capture.'
       : 'Point the camera at the batch label (EXP / MRP), then capture.';
+    showScanCameraView();
     document.getElementById('scanModal').classList.add('open');
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
       .then(function(stream){
@@ -772,12 +808,58 @@
       });
   }
 
-  function closeScanModal(){
+  function stopScanStream(){
     if(scanStream){
       scanStream.getTracks().forEach(t => t.stop());
       scanStream = null;
     }
+  }
+
+  function closeScanModal(){
+    stopScanStream();
     document.getElementById('scanModal').classList.remove('open');
+  }
+
+  function showScanCameraView(){
+    document.getElementById('scanCameraView').style.display = 'block';
+    document.getElementById('scanSelectView').style.display = 'none';
+    document.getElementById('scanCameraActions').style.display = 'flex';
+    document.getElementById('scanSelectActionsName').style.display = 'none';
+    document.getElementById('scanSelectActionsExpiry').style.display = 'none';
+    document.getElementById('scanSelectActionsExpiry2').style.display = 'none';
+    document.getElementById('scanCaptureBtn').disabled = false;
+  }
+
+  function showScanSelectView(){
+    document.getElementById('scanCameraView').style.display = 'none';
+    document.getElementById('scanSelectView').style.display = 'block';
+    document.getElementById('scanCameraActions').style.display = 'none';
+    if(scanMode === 'name'){
+      document.getElementById('scanSelectActionsName').style.display = 'flex';
+      document.getElementById('scanStatusText').textContent = 'Tap the word(s) that make up the product name, then confirm.';
+    } else {
+      document.getElementById('scanSelectActionsExpiry').style.display = 'flex';
+      document.getElementById('scanSelectActionsExpiry2').style.display = 'flex';
+      document.getElementById('scanStatusText').textContent = 'Tap the expiry date words, press "Use as Expiry", then tap the price words and press "Use as Price".';
+    }
+  }
+
+  function retakeScan(){
+    document.getElementById('scanError').style.display = 'none';
+    document.getElementById('scanSelectedText').value = '';
+    scanWords = [];
+    scanSelectedIdx = [];
+    showScanCameraView();
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
+      .then(function(stream){
+        scanStream = stream;
+        document.getElementById('scanVideo').srcObject = stream;
+      })
+      .catch(function(err){
+        const errBox = document.getElementById('scanError');
+        errBox.textContent = 'Could not access camera: ' + err.message + '. Please allow camera permission.';
+        errBox.style.display = 'block';
+      });
   }
 
   function captureAndScan(){
@@ -791,26 +873,99 @@
     canvas.height = video.videoHeight;
     canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
 
+    // Freeze the frame immediately — stop the live camera so the photo stays still.
+    stopScanStream();
+
     const btn = document.getElementById('scanCaptureBtn');
     const statusEl = document.getElementById('scanStatusText');
     btn.disabled = true;
     statusEl.textContent = '🔄 Reading text... this can take a few seconds.';
 
-    recognizeBestOrientation(canvas)
-      .then(function(text){
-        applyScannedText(text, scanMode);
+    recognizeBestOrientationWords(canvas)
+      .then(function(best){
+        renderScanSelectUI(best.canvas, best.words);
+        // Try a quick auto-fill as a convenience; the user can still fix it via tap-select below.
+        applyScannedText(best.text, scanMode, true);
       })
       .catch(function(err){
         const errBox = document.getElementById('scanError');
         errBox.textContent = 'Could not read text: ' + err.message;
         errBox.style.display = 'block';
-      })
-      .finally(function(){
         btn.disabled = false;
-        statusEl.textContent = scanMode === 'name'
-          ? 'Point the camera at the brand name on the front of the box, then capture.'
-          : 'Point the camera at the batch label (EXP / MRP), then capture.';
       });
+  }
+
+  // Draws the frozen photo into the select view and overlays a tappable box per detected word.
+  function renderScanSelectUI(canvas, words){
+    scanWords = words.filter(w => w.text && w.text.trim().length > 0);
+    scanSelectedIdx = [];
+    document.getElementById('scanFrozenImg').src = canvas.toDataURL('image/jpeg', 0.85);
+    const overlay = document.getElementById('scanWordOverlay');
+    overlay.innerHTML = '';
+    const cw = canvas.width, ch = canvas.height;
+    scanWords.forEach(function(w, idx){
+      const box = document.createElement('div');
+      box.className = 'scan-word';
+      box.style.left = (w.x0 / cw * 100) + '%';
+      box.style.top = (w.y0 / ch * 100) + '%';
+      box.style.width = ((w.x1 - w.x0) / cw * 100) + '%';
+      box.style.height = ((w.y1 - w.y0) / ch * 100) + '%';
+      box.title = w.text;
+      box.onclick = function(){ toggleScanWord(idx, box); };
+      overlay.appendChild(box);
+    });
+    document.getElementById('scanSelectedText').value = '';
+    showScanSelectView();
+  }
+
+  function toggleScanWord(idx, boxEl){
+    const pos = scanSelectedIdx.indexOf(idx);
+    if(pos === -1){
+      scanSelectedIdx.push(idx);
+      boxEl.classList.add('selected');
+    } else {
+      scanSelectedIdx.splice(pos, 1);
+      boxEl.classList.remove('selected');
+    }
+    // Keep selected words in the order they appear on the photo, not tap order.
+    const ordered = scanSelectedIdx.slice().sort((a, b) => a - b);
+    document.getElementById('scanSelectedText').value = ordered.map(i => scanWords[i].text).join(' ').trim();
+  }
+
+  function useSelectedScanText(target){
+    const text = document.getElementById('scanSelectedText').value.trim();
+    if(!text){
+      alert('Please tap the word(s) on the photo (or type the text) first.');
+      return;
+    }
+    if(target === 'name'){
+      document.getElementById('fName').value = text;
+      closeScanModal();
+      return;
+    }
+    if(target === 'expiry'){
+      const m = text.match(/(0[1-9]|1[0-2])[\/\-\.\s](\d{2}|\d{4})/);
+      if(!m){
+        alert('Could not find a month/year in the selected text (expected e.g. 12/2027). Please tap the exact date, or type it manually in the Expiry field.');
+        return;
+      }
+      let month = parseInt(m[1], 10);
+      let year = m[2].length === 2 ? (2000 + parseInt(m[2], 10)) : parseInt(m[2], 10);
+      const daysInMonth = [31, (year%4===0 && (year%100!==0 || year%400===0))?29:28,31,30,31,30,31,31,30,31,30,31];
+      document.getElementById('fExpiry').value = year + '-' + String(month).padStart(2,'0') + '-' + String(daysInMonth[month-1]).padStart(2,'0');
+      alert('Expiry set. Now tap the price on the photo (if any) and press "Use as Price", or press Done.');
+      return;
+    }
+    if(target === 'price'){
+      const m = text.match(/(\d{1,6}(?:\.\d{1,2})?)/);
+      if(!m){
+        alert('Could not find a number in the selected text. Please tap the price digits, or type it manually in the Price field.');
+        return;
+      }
+      document.getElementById('fPrice').value = m[1];
+      alert('Price set. Press Done, or Retake to scan another label.');
+      return;
+    }
   }
 
   // Rotates a source canvas by the given degrees (0/90/180/270) onto a new canvas
@@ -830,8 +985,9 @@
   }
 
   // Runs OCR at 0/90/180/270 rotations (the box in the photo is often sideways)
-  // and keeps whichever result Tesseract was most confident about.
-  function recognizeBestOrientation(canvas){
+  // and keeps whichever result Tesseract was most confident about — canvas, full text,
+  // and per-word bounding boxes (so the frozen photo can show tappable words).
+  function recognizeBestOrientationWords(canvas){
     const angles = [0, 90, 180, 270];
     let best = null;
     return angles.reduce(function(chain, angle){
@@ -840,16 +996,25 @@
         return Tesseract.recognize(testCanvas, 'eng').then(function(result){
           const confidence = result.data.confidence || 0;
           if(!best || confidence > best.confidence){
-            best = { confidence: confidence, text: result.data.text || '' };
+            best = {
+              confidence: confidence,
+              canvas: testCanvas,
+              text: result.data.text || '',
+              words: (result.data.words || []).map(function(w){
+                return { text: (w.text || '').trim(), x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 };
+              })
+            };
           }
         });
       });
     }, Promise.resolve()).then(function(){
-      return best ? best.text : '';
+      return best || { canvas: canvas, text: '', words: [] };
     });
   }
 
-  function applyScannedText(rawText, mode){
+  // silent=true skips the "Auto-filled..." alert and doesn't close the modal — used right
+  // after capture, as a convenience pre-fill while the user still gets the tap-to-select photo.
+  function applyScannedText(rawText, mode, silent){
     const lines = rawText.split('\n').map(l => l.trim()).filter(l => l.length > 1);
     let foundName = false, foundExpiry = false, foundPrice = false;
 
@@ -894,6 +1059,8 @@
         break;
       }
     }
+
+    if(silent) return;
 
     closeScanModal();
 
