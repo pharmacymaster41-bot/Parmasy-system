@@ -396,11 +396,13 @@
     <div id="scanCameraView">
       <div style="position:relative;background:#000;border-radius:10px;overflow:hidden;">
         <video id="scanVideo" autoplay playsinline style="width:100%;display:block;max-height:320px;"></video>
+        <div id="scanGuideBox" style="position:absolute;left:6%;top:36%;width:88%;height:28%;border:2px dashed #fff;border-radius:6px;box-shadow:0 0 0 9999px rgba(0,0,0,0.4);pointer-events:none;"></div>
       </div>
+      <p class="sub" style="margin:8px 0 0;text-align:center;">Fit only the text you want inside the dashed box, then capture.</p>
     </div>
 
     <div id="scanSelectView" style="display:none;">
-      <div id="scanImageWrap" style="position:relative;background:#000;border-radius:10px;overflow:hidden;line-height:0;max-height:320px;">
+      <div id="scanImageWrap" style="position:relative;background:#000;border-radius:10px;overflow:hidden;line-height:0;">
         <img id="scanFrozenImg" style="width:100%;display:block;">
         <div id="scanWordOverlay" style="position:absolute;top:0;left:0;width:100%;height:100%;"></div>
       </div>
@@ -862,6 +864,9 @@
       });
   }
 
+  // Guide box position as fractions of the video's own frame — must match #scanGuideBox CSS.
+  const SCAN_GUIDE = { left: 0.06, top: 0.36, width: 0.88, height: 0.28 };
+
   function captureAndScan(){
     const video = document.getElementById('scanVideo');
     const canvas = document.getElementById('scanCanvas');
@@ -869,9 +874,16 @@
       alert('Camera not ready yet, please wait a second and try again.');
       return;
     }
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
-    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+    // Crop to just the guide box (in the video's native pixel coordinates), not the whole frame —
+    // this is what fixes boxes landing on background noise instead of the real text.
+    const sx = Math.round(SCAN_GUIDE.left * video.videoWidth);
+    const sy = Math.round(SCAN_GUIDE.top * video.videoHeight);
+    const sw = Math.round(SCAN_GUIDE.width * video.videoWidth);
+    const sh = Math.round(SCAN_GUIDE.height * video.videoHeight);
+    // Upscale 2x — small print reads much more reliably at higher resolution.
+    canvas.width = sw * 2;
+    canvas.height = sh * 2;
+    canvas.getContext('2d').drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
 
     // Freeze the frame immediately — stop the live camera so the photo stays still.
     stopScanStream();
@@ -984,30 +996,51 @@
     return out;
   }
 
+  // A single reusable Tesseract worker, created once and configured for small,
+  // isolated blocks of text (a cropped guide-box region), not full pages.
+  let ocrWorkerPromise = null;
+  function getOcrWorker(){
+    if(!ocrWorkerPromise){
+      ocrWorkerPromise = Tesseract.createWorker('eng').then(function(worker){
+        // '11' = PSM.SPARSE_TEXT — find text anywhere in the crop without assuming a page layout;
+        // works well for a small isolated label on a plain/textured background.
+        return worker.setParameters({ tessedit_pageseg_mode: '11' }).then(function(){
+          return worker;
+        });
+      });
+    }
+    return ocrWorkerPromise;
+  }
+
   // Runs OCR at 0/90/180/270 rotations (the box in the photo is often sideways)
   // and keeps whichever result Tesseract was most confident about — canvas, full text,
   // and per-word bounding boxes (so the frozen photo can show tappable words).
+  // Words with very low confidence (background noise, not real print) are dropped.
   function recognizeBestOrientationWords(canvas){
     const angles = [0, 90, 180, 270];
     let best = null;
-    return angles.reduce(function(chain, angle){
-      return chain.then(function(){
-        const testCanvas = angle === 0 ? canvas : rotateCanvas(canvas, angle);
-        return Tesseract.recognize(testCanvas, 'eng').then(function(result){
-          const confidence = result.data.confidence || 0;
-          if(!best || confidence > best.confidence){
-            best = {
-              confidence: confidence,
-              canvas: testCanvas,
-              text: result.data.text || '',
-              words: (result.data.words || []).map(function(w){
-                return { text: (w.text || '').trim(), x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 };
-              })
-            };
-          }
+    return getOcrWorker().then(function(worker){
+      return angles.reduce(function(chain, angle){
+        return chain.then(function(){
+          const testCanvas = angle === 0 ? canvas : rotateCanvas(canvas, angle);
+          return worker.recognize(testCanvas).then(function(result){
+            const confidence = result.data.confidence || 0;
+            if(!best || confidence > best.confidence){
+              best = {
+                confidence: confidence,
+                canvas: testCanvas,
+                text: result.data.text || '',
+                words: (result.data.words || [])
+                  .filter(function(w){ return (w.confidence || 0) >= 35; })
+                  .map(function(w){
+                    return { text: (w.text || '').trim(), x0: w.bbox.x0, y0: w.bbox.y0, x1: w.bbox.x1, y1: w.bbox.y1 };
+                  })
+              };
+            }
+          });
         });
-      });
-    }, Promise.resolve()).then(function(){
+      }, Promise.resolve());
+    }).then(function(){
       return best || { canvas: canvas, text: '', words: [] };
     });
   }
